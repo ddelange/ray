@@ -17,7 +17,7 @@ podTypes:
     rayHeadType:
         image: ""
         # CPU is the number of CPUs used by this pod type.
-        # (Used for both requests and limits. Must be an integer, as Ray does not support fractional CPUs.)
+        # (Used only for requests. Ray does not support fractional CPUs, so when specifying e.g. "3800m" here, pass rayResources: {"CPU": 4}.)
         CPU: 1
         # memory is the memory used by this Pod type.
         # (Used for both requests and limits.)
@@ -54,7 +54,7 @@ podTypes:
         # (Used for both requests and limits.)
         memory: 1Gi
         # CPU is the number of CPUs used by this pod type.
-        # (Used for both requests and limits. Must be an integer, as Ray does not support fractional CPUs.)
+        # (Used only for requests. Ray does not support fractional CPUs, so when specifying e.g. "3800m" here, pass rayResources: {"CPU": 4}.)
         CPU: 1
         # GPU is the number of NVIDIA GPUs used by this pod type.
         # (Optional, requires GPU nodes with appropriate setup. See https://docs.ray.io/en/master/cluster/kubernetes-gpu.html)
