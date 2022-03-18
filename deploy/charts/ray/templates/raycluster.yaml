@@ -67,7 +67,7 @@ spec:
                 cpu: {{ .CPU }}
                 memory: {{ .memory }}
               limits:
-                # cpu: {{ .CPU }} # disabled, see yaml in https://github.com/ray-project/kuberay/issues/200
+                # cpu: {{ .CPU }} # unwanted (see yaml in https://github.com/ray-project/kuberay/issues/200) and unneeded (see https://learnk8s.io/setting-cpu-memory-limits-requests)
                 # The maximum memory that this pod is allowed to use. The
                 # limit will be detected by ray and split to use 10% for
                 # redis, 30% for the shared memory object store, and the
