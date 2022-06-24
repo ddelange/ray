@@ -1,41 +1,47 @@
-import os
-import pytest
-import sys
-import subprocess
-import time
-import requests
-from pathlib import Path
-from unittest import mock
 import json
+import logging
+import os
+import subprocess
+import sys
 import tempfile
+import time
+from pathlib import Path
+from typing import List
+from unittest import mock
+
+import pytest
+import requests
 
 import ray
-from ray.exceptions import RuntimeEnvSetupError
-from ray._private.test_utils import (
-    wait_for_condition,
-    get_error_message,
-    get_log_sources,
-    chdir,
-)
-from ray._private.utils import (
-    get_wheel_filename,
-    get_master_wheel_url,
-    get_release_wheel_url,
-)
+from ray._private.runtime_env.context import RuntimeEnvContext
+from ray._private.runtime_env.plugin import RuntimeEnvPlugin
+from ray._private.runtime_env.uri_cache import URICache
 from ray._private.runtime_env.utils import (
     SubprocessCalledProcessError,
     check_output_cmd,
 )
-from ray._private.runtime_env.uri_cache import URICache
-from ray._private.runtime_env.context import RuntimeEnvContext
-from ray._private.runtime_env.plugin import RuntimeEnvPlugin
+from ray._private.test_utils import (
+    chdir,
+    get_error_message,
+    get_log_sources,
+    wait_for_condition,
+)
+from ray._private.utils import (
+    get_master_wheel_url,
+    get_release_wheel_url,
+    get_wheel_filename,
+)
+from ray.exceptions import RuntimeEnvSetupError
 from ray.runtime_env import RuntimeEnv
 
 
 def test_get_wheel_filename():
-    ray_version = "2.0.0.dev0"
+    ray_version = "3.0.0.dev0"
     for sys_platform in ["darwin", "linux", "win32"]:
         for py_version in ["36", "37", "38", "39"]:
+            if sys_platform == "win32" and py_version == "36":
+                # Windows wheels are not built for py3.6 anymore
+                continue
             filename = get_wheel_filename(sys_platform, ray_version, py_version)
             prefix = "https://s3-us-west-2.amazonaws.com/ray-wheels/latest/"
             url = f"{prefix}{filename}"
@@ -43,10 +49,13 @@ def test_get_wheel_filename():
 
 
 def test_get_master_wheel_url():
-    ray_version = "2.0.0.dev0"
-    test_commit = "58a73821fbfefbf53a19b6c7ffd71e70ccf258c7"
+    ray_version = "3.0.0.dev0"
+    test_commit = "c3ac6fcf3fcc8cfe6930c9a820add0e187bff579"
     for sys_platform in ["darwin", "linux", "win32"]:
         for py_version in ["36", "37", "38", "39"]:
+            if sys_platform == "win32" and py_version == "36":
+                # Windows wheels are not built for py3.6 anymore
+                continue
             url = get_master_wheel_url(
                 test_commit, sys_platform, ray_version, py_version
             )
@@ -145,52 +154,6 @@ def test_container_option_serialize(runtime_env_class):
     assert job_config_serialized.count(b"--name=test") == 1
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="conda in runtime_env unsupported on Windows."
-)
-@pytest.mark.parametrize("runtime_env_class", [dict, RuntimeEnv])
-def test_invalid_conda_env(shutdown_only, runtime_env_class):
-    ray.init()
-
-    @ray.remote
-    def f():
-        pass
-
-    @ray.remote
-    class A:
-        def f(self):
-            pass
-
-    start = time.time()
-    bad_env = runtime_env_class(conda={"dependencies": ["this_doesnt_exist"]})
-    with pytest.raises(
-        RuntimeEnvSetupError,
-        # The actual error message should be included in the exception.
-        match="ResolvePackageNotFound",
-    ):
-        ray.get(f.options(runtime_env=bad_env).remote())
-    first_time = time.time() - start
-
-    # Check that another valid task can run.
-    ray.get(f.remote())
-
-    a = A.options(runtime_env=bad_env).remote()
-    with pytest.raises(
-        ray.exceptions.RuntimeEnvSetupError, match="ResolvePackageNotFound"
-    ):
-        ray.get(a.f.remote())
-
-    # The second time this runs it should be faster as the error is cached.
-    start = time.time()
-    with pytest.raises(RuntimeEnvSetupError, match="ResolvePackageNotFound"):
-        ray.get(f.options(runtime_env=bad_env).remote())
-
-    assert (time.time() - start) < (first_time / 2.0)
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="runtime_env unsupported on Windows."
-)
 @pytest.mark.parametrize("runtime_env_class", [dict, RuntimeEnv])
 def test_no_spurious_worker_startup(shutdown_only, runtime_env_class):
     """Test that no extra workers start up during a long env installation."""
@@ -215,7 +178,7 @@ def test_no_spurious_worker_startup(shutdown_only, runtime_env_class):
     assert ray.get(a.get.remote()) == 0
 
     # Check "debug_state.txt" to ensure no extra workers were started.
-    session_dir = ray.worker.global_worker.node.address_info["session_dir"]
+    session_dir = ray._private.worker.global_worker.node.address_info["session_dir"]
     session_path = Path(session_dir)
     debug_state_path = session_path / "logs" / "debug_state.txt"
 
@@ -272,11 +235,11 @@ def test_runtime_env_no_spurious_resource_deadlock_msg(
 
     # Check no warning printed.
     ray.get(f.remote())
-    errors = get_error_message(p, 5, ray.ray_constants.RESOURCE_DEADLOCK_ERROR)
+    errors = get_error_message(p, 5, ray._private.ray_constants.RESOURCE_DEADLOCK_ERROR)
     assert len(errors) == 0
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="pip not supported on Windows.")
+@pytest.mark.skipif(sys.platform == "win32", reason="Hangs on windows.")
 @pytest.mark.parametrize("runtime_env_class", [dict, RuntimeEnv])
 def test_failed_job_env_no_hang(shutdown_only, runtime_env_class):
     """Test that after a failed job-level env, tasks can still be run."""
@@ -609,7 +572,10 @@ class MyPlugin(RuntimeEnvPlugin):
 
     @staticmethod
     def modify_context(
-        uri: str, plugin_config_dict: dict, ctx: RuntimeEnvContext
+        uris: List[str],
+        runtime_env: dict,
+        ctx: RuntimeEnvContext,
+        logger: logging.Logger,
     ) -> None:
         global runtime_env_retry_times
         runtime_env_retry_times += 1
@@ -652,9 +618,6 @@ def test_runtime_env_retry(set_runtime_env_retry_times, ray_start_regular):
             )
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="conda in runtime_env unsupported on Windows."
-)
 @pytest.mark.parametrize(
     "option",
     ["pip_list", "pip_dict", "conda_name", "conda_dict", "container", "plugins"],
@@ -676,7 +639,7 @@ def test_serialize_deserialize(option):
     elif option == "container":
         runtime_env["container"] = {
             "image": "anyscale/ray-ml:nightly-py38-cpu",
-            "worker_path": "/root/python/ray/workers/default_worker.py",
+            "worker_path": "/root/python/ray/_private/workers/default_worker.py",
             "run_options": ["--cap-drop SYS_ADMIN", "--log-level=debug"],
         }
     elif option == "plugins":
@@ -698,15 +661,12 @@ def test_serialize_deserialize(option):
         pip_config_in_runtime_env = runtime_env.pop("pip")
         assert {
             "packages": pip_config_in_runtime_env,
-            "pip_check": True,
+            "pip_check": False,
         } == pip_config_in_cls_runtime_env
 
     assert cls_runtime_env_dict == runtime_env
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="conda in runtime_env unsupported on Windows."
-)
 def test_runtime_env_interface():
 
     # Test the interface related to working_dir
@@ -813,8 +773,8 @@ def test_runtime_env_interface():
         assert runtime_env.virtualenv_name() is None
         runtime_env["pip"]["packages"].extend(addition_pip_packages)
         runtime_env_dict["pip"]["packages"].extend(addition_pip_packages)
-        # The default value of pip_check is True
-        runtime_env_dict["pip"]["pip_check"] = True
+        # The default value of pip_check is False
+        runtime_env_dict["pip"]["pip_check"] = False
         assert runtime_env_dict == runtime_env.to_dict()
         assert runtime_env.has_pip()
         assert set(runtime_env.pip_config()["packages"]) == set(
@@ -826,8 +786,10 @@ def test_runtime_env_interface():
         assert runtime_env.has_pip()
         assert set(runtime_env.pip_config()["packages"]) == set(requirement_packages)
         assert runtime_env.virtualenv_name() is None
-        # The default value of pip_check is True
-        runtime_env_dict["pip"] = dict(packages=runtime_env_dict["pip"], pip_check=True)
+        # The default value of pip_check is False
+        runtime_env_dict["pip"] = dict(
+            packages=runtime_env_dict["pip"], pip_check=False
+        )
         assert runtime_env_dict == runtime_env.to_dict()
         # Test that the modification of pip also works on
         # proto serialization
@@ -849,7 +811,7 @@ def test_runtime_env_interface():
     # Test the interface related to container
     container_init = {
         "image": "anyscale/ray-ml:nightly-py38-cpu",
-        "worker_path": "/root/python/ray/workers/default_worker.py",
+        "worker_path": "/root/python/ray/_private/workers/default_worker.py",
         "run_options": ["--cap-drop SYS_ADMIN", "--log-level=debug"],
     }
     update_container = {"image": "test_modify"}
@@ -880,4 +842,7 @@ def test_runtime_env_interface():
 if __name__ == "__main__":
     import sys
 
-    sys.exit(pytest.main(["-sv", __file__]))
+    if os.environ.get("PARALLEL_CI"):
+        sys.exit(pytest.main(["-n", "auto", "--boxed", "-vs", __file__]))
+    else:
+        sys.exit(pytest.main(["-sv", __file__]))

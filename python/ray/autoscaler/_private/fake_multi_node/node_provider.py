@@ -4,28 +4,29 @@ import logging
 import os
 import subprocess
 import sys
-from threading import RLock
 import time
+from threading import RLock
 from types import ModuleType
 from typing import Any, Dict, Optional
+
 import yaml
 
 import ray
+from ray._private.ray_constants import DEFAULT_PORT
 from ray.autoscaler._private.fake_multi_node.command_runner import (
     FakeDockerCommandRunner,
 )
 from ray.autoscaler.command_runner import CommandRunnerInterface
 from ray.autoscaler.node_provider import NodeProvider
 from ray.autoscaler.tags import (
-    TAG_RAY_NODE_KIND,
     NODE_KIND_HEAD,
     NODE_KIND_WORKER,
-    TAG_RAY_USER_NODE_TYPE,
+    STATUS_UP_TO_DATE,
+    TAG_RAY_NODE_KIND,
     TAG_RAY_NODE_NAME,
     TAG_RAY_NODE_STATUS,
-    STATUS_UP_TO_DATE,
+    TAG_RAY_USER_NODE_TYPE,
 )
-from ray.ray_constants import DEFAULT_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ DOCKER_HEAD_CMD = (
     "touch {volume_dir}/.in_docker && "
     "sudo chown -R ray:users /cluster/node && "
     "sudo chmod -R 777 /cluster/node && "
+    "sudo chown -R ray:users /cluster/shared && "
+    "sudo chmod -R 777 /cluster/shared && "
     "sudo chmod 700 ~/.ssh && "
     "sudo chmod 600 ~/.ssh/authorized_keys && "
     "sudo chmod 600 ~/ray_bootstrap_key.pem && "
@@ -323,7 +326,7 @@ class FakeMultiNodeProvider(NodeProvider):
                     "RAY_OVERRIDE_RESOURCES": json.dumps(resources),
                 },
             )
-            node = ray.node.Node(
+            node = ray._private.node.Node(
                 ray_params, head=False, shutdown_at_exit=False, spawn_reaper=False
             )
             self._nodes[next_id] = {
@@ -453,7 +456,7 @@ class FakeMultiNodeDockerProvider(FakeMultiNodeProvider):
 
         # Create shared directory
         node_dir = os.path.join(self._volume_dir, "nodes", node_id)
-        os.makedirs(node_dir, mode=0o755, exist_ok=True)
+        os.makedirs(node_dir, mode=0o777, exist_ok=True)
 
         resource_str = json.dumps(resources, indent=None)
 
@@ -471,6 +474,7 @@ class FakeMultiNodeDockerProvider(FakeMultiNodeProvider):
             env_vars={
                 "RAY_OVERRIDE_NODE_ID_FOR_TESTING": node_id,
                 "RAY_OVERRIDE_RESOURCES": resource_str,
+                **self.provider_config.get("env_vars", {}),
             },
             volume_dir=self._volume_dir,
             node_state_path=self._node_state_path,

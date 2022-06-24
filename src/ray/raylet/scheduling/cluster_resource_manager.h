@@ -22,6 +22,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "ray/common/bundle_location_index.h"
 #include "ray/raylet/scheduling/cluster_resource_data.h"
 #include "ray/raylet/scheduling/fixed_point.h"
 #include "ray/raylet/scheduling/local_resource_manager.h"
@@ -31,7 +32,11 @@
 namespace ray {
 namespace raylet {
 class ClusterTaskManagerTest;
-}
+class SchedulingPolicyTest;
+}  // namespace raylet
+namespace gcs {
+class GcsActorSchedulerTest;
+}  // namespace gcs
 
 /// Class manages the resources view of the entire cluster.
 /// This class is not thread safe.
@@ -123,8 +128,11 @@ class ClusterResourceManager {
 
   void DebugString(std::stringstream &buffer) const;
 
+  BundleLocationIndex &GetBundleLocationIndex();
+
  private:
   friend class ClusterResourceScheduler;
+  friend class gcs::GcsActorSchedulerTest;
 
   /// Add a new node or overwrite the resources of an existing node.
   ///
@@ -145,6 +153,8 @@ class ClusterResourceManager {
   /// The key of the map is the node ID.
   absl::flat_hash_map<scheduling::NodeID, Node> nodes_;
 
+  BundleLocationIndex bundle_location_index_;
+
   friend class ClusterResourceSchedulerTest;
   friend struct ClusterResourceManagerTest;
   friend class raylet::ClusterTaskManagerTest;
@@ -152,6 +162,7 @@ class ClusterResourceManager {
   FRIEND_TEST(ClusterResourceSchedulerTest, SchedulingModifyClusterNodeTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, SchedulingUpdateAvailableResourcesTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, SchedulingAddOrUpdateNodeTest);
+  FRIEND_TEST(ClusterResourceSchedulerTest, NodeAffinitySchedulingStrategyTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, SpreadSchedulingStrategyTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, SchedulingResourceRequestTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, SchedulingUpdateTotalResourcesTest);
@@ -166,6 +177,9 @@ class ClusterResourceManager {
   FRIEND_TEST(ClusterResourceSchedulerTest, DynamicResourceTest);
   FRIEND_TEST(ClusterTaskManagerTestWithGPUsAtHead, RleaseAndReturnWorkerCpuResources);
   FRIEND_TEST(ClusterResourceSchedulerTest, TestForceSpillback);
+  FRIEND_TEST(ClusterResourceSchedulerTest, AffinityWithBundleScheduleTest);
+
+  friend class raylet::SchedulingPolicyTest;
 };
 
 }  // end namespace ray

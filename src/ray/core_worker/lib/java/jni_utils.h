@@ -115,14 +115,17 @@ extern jclass java_ray_pending_calls_limit_exceeded_exception_class;
 /// RayIntentionalSystemExitException class
 extern jclass java_ray_intentional_system_exit_exception_class;
 
-/// RayActorCreationTaskException class
+/// RayActorException class
 extern jclass java_ray_actor_exception_class;
+
+/// RayExceptionSerializer class
+extern jclass java_ray_exception_serializer_class;
 
 /// RayTimeoutException class
 extern jclass java_ray_timeout_exception_class;
 
-/// toBytes method of RayException
-extern jmethodID java_ray_exception_to_bytes;
+/// RayExceptionSerializer to bytes
+extern jmethodID java_ray_exception_serializer_to_bytes;
 
 /// JniExceptionUtil class
 extern jclass java_jni_exception_util_class;
@@ -175,6 +178,8 @@ extern jfieldID java_task_creation_options_group;
 extern jfieldID java_task_creation_options_bundle_index;
 /// concurrencyGroupName field of CallOptions class
 extern jfieldID java_call_options_concurrency_group_name;
+/// serializedRuntimeEnvInfo field of CallOptions class
+extern jfieldID java_call_options_serialized_runtime_env_info;
 
 /// ActorCreationOptions class
 extern jclass java_actor_creation_options_class;
@@ -549,7 +554,7 @@ inline jbyteArray NativeBufferToJavaByteArray(JNIEnv *env,
   if (!buffer) {
     return nullptr;
   }
-  
+
   auto buffer_size = buffer->Size();
   jbyteArray java_byte_array = env->NewByteArray(buffer_size);
   if (buffer_size > 0) {
@@ -671,7 +676,9 @@ inline NativeT JavaProtobufObjectToNativeProtobufObject(JNIEnv *env, jobject jav
 inline std::shared_ptr<LocalMemoryBuffer> SerializeActorCreationException(
     JNIEnv *env, jthrowable creation_exception) {
   jbyteArray exception_jbyte_array = static_cast<jbyteArray>(
-      env->CallObjectMethod(creation_exception, java_ray_exception_to_bytes));
+      env->CallStaticObjectMethod(java_ray_exception_serializer_class,
+                                  java_ray_exception_serializer_to_bytes,
+                                  creation_exception));
   int len = env->GetArrayLength(exception_jbyte_array);
   auto buf = std::make_shared<LocalMemoryBuffer>(len);
   env->GetByteArrayRegion(

@@ -4,7 +4,7 @@
 User Guides
 ===========
 
-If you’re new to Ray Datasets, we recommend starting with the :ref:`Ray Datasets Quick Start <ray_datasets_quick_start>`.
+If you’re new to Ray Datasets, we recommend starting with the :ref:`Ray Datasets Quick Start <datasets_getting_started>`.
 This user guide will help you navigate the Ray Datasets project and show you how achieve several tasks, for instance
 you will learn
 
@@ -16,9 +16,15 @@ you will learn
 .. toctree::
     :maxdepth: 2
 
+    creating-datasets
+    saving-datasets
+    transforming-datasets
+    accessing-datasets
+    pipelining-compute
     dataset-ml-preprocessing
     dataset-tensor-support
     advanced-pipelines
     random-access
     custom-data
+    memory-management
     performance-tips

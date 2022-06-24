@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -7,8 +8,6 @@ import threading
 import time
 from collections import deque
 from typing import Optional, Dict, Any
-
-import ray
 
 from ray_release.anyscale_util import LAST_LOGS_LENGTH
 
@@ -34,7 +33,10 @@ def install_cluster_env_packages(cluster_env: Dict[Any, Any]):
 
     for package in packages:
         subprocess.check_output(
-            f"pip install -U {package}", shell=True, env=os.environ, text=True
+            f"pip install -U {shlex.quote(package)}",
+            shell=True,
+            env=os.environ,
+            text=True,
         )
 
 
@@ -63,6 +65,8 @@ class ClientRunner(CommandRunner):
             raise LocalEnvSetupError(f"Error setting up local environment: {e}") from e
 
     def wait_for_nodes(self, num_nodes: int, timeout: float = 900):
+        import ray
+
         ray_address = self.cluster_manager.get_cluster_address()
         try:
             if ray.is_initialized:

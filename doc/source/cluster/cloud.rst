@@ -99,6 +99,7 @@ Ray with cloud providers
 
 
     Azure Node Provider Maintainers (GitHub handles): gramhagen, eisber, ijrsvt
+    .. note:: The Azure Node Provider is community-maintained. It is maintained by its authors, not the Ray team.
 
 .. tabbed:: GCP
 
@@ -147,6 +148,9 @@ Ray with cloud providers
         $ ray down ray/python/ray/autoscaler/aliyun/example-full.yaml
 
     Aliyun Node Provider Maintainers (GitHub handles): zhuangzhuang131419, chenk008
+
+    .. note:: The Aliyun Node Provider is community-maintained. It is maintained by its authors, not the Ray team.
+
 
 .. tabbed:: Custom
 
@@ -371,7 +375,7 @@ To run a distributed Ray program, you'll need to execute your program on the sam
 
 .. tabbed:: Python
 
-    Within your program/script, you must call ``ray.init`` and add the ``address`` parameter to ``ray.init`` (like ``ray.init(address=...)``). This causes Ray to connect to the existing cluster. For example:
+    Within your program/script, you must call ``ray.init`` and add the ``address`` parameter to ``ray.init`` (like ``ray.init(address=...)``). This causes your script to connect to the existing Ray runtime on the cluster. For example:
 
     .. code-block:: python
 

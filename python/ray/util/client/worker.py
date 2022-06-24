@@ -6,49 +6,45 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 import uuid
 import warnings
 from collections import defaultdict
 from concurrent.futures import Future
-import tempfile
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import grpc
 
-from ray.job_config import JobConfig
+import ray._private.utils
 import ray.cloudpickle as cloudpickle
+import ray.core.generated.ray_client_pb2 as ray_client_pb2
+import ray.core.generated.ray_client_pb2_grpc as ray_client_pb2_grpc
+from ray._private.ray_constants import DEFAULT_CLIENT_RECONNECT_GRACE_PERIOD
+from ray._private.runtime_env.py_modules import upload_py_modules_if_needed
+from ray._private.runtime_env.working_dir import upload_working_dir_if_needed
 
 # Use cloudpickle's version of pickle for UnpicklingError
 from ray.cloudpickle.compat import pickle
-import ray.core.generated.ray_client_pb2 as ray_client_pb2
-import ray.core.generated.ray_client_pb2_grpc as ray_client_pb2_grpc
 from ray.exceptions import GetTimeoutError
-from ray.ray_constants import DEFAULT_CLIENT_RECONNECT_GRACE_PERIOD
-from ray.util.client.client_pickler import (
-    convert_to_arg,
-    dumps_from_client,
-    loads_from_server,
-)
+from ray.job_config import JobConfig
+from ray.util.client.client_pickler import dumps_from_client, loads_from_server
 from ray.util.client.common import (
+    GRPC_OPTIONS,
+    GRPC_UNRECOVERABLE_ERRORS,
+    INT32_MAX,
+    OBJECT_TRANSFER_WARNING_SIZE,
     ClientActorClass,
     ClientActorHandle,
     ClientActorRef,
     ClientObjectRef,
     ClientRemoteFunc,
     ClientStub,
-    GRPC_OPTIONS,
-    GRPC_UNRECOVERABLE_ERRORS,
-    INT32_MAX,
-    OBJECT_TRANSFER_WARNING_SIZE,
 )
 from ray.util.client.dataclient import DataClient
 from ray.util.client.logsclient import LogstreamClient
 from ray.util.debug import log_once
-import ray._private.utils
-from ray._private.runtime_env.py_modules import upload_py_modules_if_needed
-from ray._private.runtime_env.working_dir import upload_working_dir_if_needed
 
 if TYPE_CHECKING:
     from ray.actor import ActorClass
@@ -421,14 +417,19 @@ class Worker:
         else:
             deadline = time.monotonic() + timeout
 
+        max_blocking_operation_time = MAX_BLOCKING_OPERATION_TIME_S
+        if "RAY_CLIENT_MAX_BLOCKING_OPERATION_TIME_S" in os.environ:
+            max_blocking_operation_time = float(
+                os.environ["RAY_CLIENT_MAX_BLOCKING_OPERATION_TIME_S"]
+            )
         while True:
             if deadline:
                 op_timeout = min(
-                    MAX_BLOCKING_OPERATION_TIME_S,
+                    max_blocking_operation_time,
                     max(deadline - time.monotonic(), 0.001),
                 )
             else:
-                op_timeout = MAX_BLOCKING_OPERATION_TIME_S
+                op_timeout = max_blocking_operation_time
             try:
                 res = self._get(to_get, op_timeout)
                 break
@@ -542,17 +543,14 @@ class Worker:
 
     def call_remote(self, instance, *args, **kwargs) -> List[Future]:
         task = instance._prepare_client_task()
-        for arg in args:
-            pb_arg = convert_to_arg(arg, self._client_id)
-            task.args.append(pb_arg)
-        for k, v in kwargs.items():
-            task.kwargs[k].CopyFrom(convert_to_arg(v, self._client_id))
+        # data is serialized tuple of (args, kwargs)
+        task.data = dumps_from_client((args, kwargs), self._client_id)
         return self._call_schedule_for_task(task, instance._num_returns())
 
     def _call_schedule_for_task(
         self, task: ray_client_pb2.ClientTask, num_returns: int
     ) -> List[Future]:
-        logger.debug("Scheduling %s" % task)
+        logger.debug(f"Scheduling task {task.name} {task.type} {task.payload_id}")
         task.client_id = self._client_id
         if num_returns is None:
             num_returns = 1
@@ -648,6 +646,8 @@ class Worker:
         task.type = ray_client_pb2.ClientTask.NAMED_ACTOR
         task.name = name
         task.namespace = namespace or ""
+        # Populate task.data with empty args and kwargs
+        task.data = dumps_from_client(([], {}), self._client_id)
         futures = self._call_schedule_for_task(task, 1)
         assert len(futures) == 1
         handle = ClientActorHandle(ClientActorRef(futures[0]))
@@ -711,7 +711,10 @@ class Worker:
     def internal_kv_get(self, key: bytes) -> bytes:
         req = ray_client_pb2.KVGetRequest(key=key)
         resp = self._call_stub("KVGet", req, metadata=self.metadata)
-        return resp.value
+        if resp.HasField("value"):
+            return resp.value
+        # Value is None when the key does not exist in the KV.
+        return None
 
     def internal_kv_exists(self, key: bytes) -> bytes:
         req = ray_client_pb2.KVGetRequest(key=key)
@@ -732,6 +735,12 @@ class Worker:
     def internal_kv_list(self, prefix: bytes) -> bytes:
         req = ray_client_pb2.KVListRequest(prefix=prefix)
         return self._call_stub("KVList", req, metadata=self.metadata).keys
+
+    def pin_runtime_env_uri(self, uri: str, expiration_s: int) -> None:
+        req = ray_client_pb2.ClientPinRuntimeEnvURIRequest(
+            uri=uri, expiration_s=expiration_s
+        )
+        self._call_stub("PinRuntimeEnvURI", req, metadata=self.metadata)
 
     def list_named_actors(self, all_namespaces: bool) -> List[Dict[str, str]]:
         req = ray_client_pb2.ClientListNamedActorsRequest(all_namespaces=all_namespaces)
@@ -810,44 +819,15 @@ class Worker:
     def _convert_actor(self, actor: "ActorClass") -> str:
         """Register a ClientActorClass for the ActorClass and return a UUID"""
         key = uuid.uuid4().hex
-        md = actor.__ray_metadata__
-        cls = md.modified_class
-        self._converted[key] = ClientActorClass(
-            cls,
-            options={
-                "max_restarts": md.max_restarts,
-                "max_task_retries": md.max_task_retries,
-                "num_cpus": md.num_cpus,
-                "num_gpus": md.num_gpus,
-                "memory": md.memory,
-                "object_store_memory": md.object_store_memory,
-                "resources": md.resources,
-                "accelerator_type": md.accelerator_type,
-                "runtime_env": md.runtime_env,
-                "concurrency_groups": md.concurrency_groups,
-                "scheduling_strategy": md.scheduling_strategy,
-            },
-        )
+        cls = actor.__ray_metadata__.modified_class
+        self._converted[key] = ClientActorClass(cls, options=actor._default_options)
         return key
 
     def _convert_function(self, func: "RemoteFunction") -> str:
         """Register a ClientRemoteFunc for the ActorClass and return a UUID"""
         key = uuid.uuid4().hex
-        f = func._function
         self._converted[key] = ClientRemoteFunc(
-            f,
-            options={
-                "num_cpus": func._num_cpus,
-                "num_gpus": func._num_gpus,
-                "max_calls": func._max_calls,
-                "max_retries": func._max_retries,
-                "resources": func._resources,
-                "accelerator_type": func._accelerator_type,
-                "num_returns": func._num_returns,
-                "memory": func._memory,
-                "runtime_env": func._runtime_env,
-                "scheduling_strategy": func._scheduling_strategy,
-            },
+            func._function, options=func._default_options
         )
         return key
 

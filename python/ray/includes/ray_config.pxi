@@ -103,3 +103,11 @@ cdef class Config:
     @staticmethod
     def record_ref_creation_sites():
         return RayConfig.instance().record_ref_creation_sites()
+
+    @staticmethod
+    def start_python_importer_thread():
+        return RayConfig.instance().start_python_importer_thread()
+
+    @staticmethod
+    def use_ray_syncer():
+        return RayConfig.instance().use_ray_syncer()

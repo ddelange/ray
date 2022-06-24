@@ -1,34 +1,32 @@
+import json
 import logging
-from pathlib import Path
 import os
 import shutil
 import sys
-import json
-import yaml
 import tempfile
+from pathlib import Path
 from typing import Optional
-
-import pytest
 from unittest.mock import patch
 
+import pytest
+import yaml
+
 import ray
-from ray.job_submission import JobSubmissionClient, JobStatus
-from ray.dashboard.modules.job.common import CURRENT_VERSION, JobInfo
-from ray.dashboard.modules.dashboard_sdk import (
-    ClusterInfo,
-    parse_cluster_info,
-)
-from ray.dashboard.tests.conftest import *  # noqa
-from ray.ray_constants import DEFAULT_DASHBOARD_PORT
-from ray.tests.conftest import _ray_start
 from ray._private.test_utils import (
     chdir,
     format_web_url,
     wait_for_condition,
     wait_until_server_available,
 )
+from ray.dashboard.modules.dashboard_sdk import ClusterInfo, parse_cluster_info
+from ray.dashboard.modules.job.common import CURRENT_VERSION, JobInfo
+from ray.dashboard.tests.conftest import *  # noqa
+from ray.job_submission import JobStatus, JobSubmissionClient
+from ray.tests.conftest import _ray_start
 
 logger = logging.getLogger(__name__)
+
+DRIVER_SCRIPT_DIR = os.path.join(os.path.dirname(__file__), "subprocess_driver_scripts")
 
 
 @pytest.fixture(scope="module")
@@ -274,6 +272,27 @@ def test_submit_job(job_sdk_client, runtime_env_option, monkeypatch):
     assert runtime_env_option["expected_logs"] in logs
 
 
+def test_per_task_runtime_env(job_sdk_client: JobSubmissionClient):
+    run_cmd = "python per_task_runtime_env.py"
+    job_id = job_sdk_client.submit_job(
+        entrypoint=run_cmd,
+        runtime_env={"working_dir": DRIVER_SCRIPT_DIR},
+    )
+
+    wait_for_condition(_check_job_succeeded, client=job_sdk_client, job_id=job_id)
+
+
+def test_ray_tune_basic(job_sdk_client: JobSubmissionClient):
+    run_cmd = "python ray_tune_basic.py"
+    job_id = job_sdk_client.submit_job(
+        entrypoint=run_cmd,
+        runtime_env={"working_dir": DRIVER_SCRIPT_DIR},
+    )
+    wait_for_condition(
+        _check_job_succeeded, timeout=30, client=job_sdk_client, job_id=job_id
+    )
+
+
 def test_http_bad_request(job_sdk_client):
     """
     Send bad requests to job http server and ensure right return code and
@@ -369,7 +388,7 @@ def test_job_metadata(job_sdk_client):
         'python -c"'
         "import ray;"
         "ray.init();"
-        "job_config=ray.worker.global_worker.core_worker.get_job_config();"
+        "job_config=ray._private.worker.global_worker.core_worker.get_job_config();"
         "print(dict(sorted(job_config.metadata.items())))"
         '"'
     )
@@ -473,7 +492,7 @@ def test_request_headers(job_sdk_client):
         )
 
 
-@pytest.mark.parametrize("scheme", ["http", "https", "ray", "fake_module"])
+@pytest.mark.parametrize("scheme", ["http", "https", "fake_module"])
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "fake.dns.name"])
 @pytest.mark.parametrize("port", [None, 8265, 10000])
 def test_parse_cluster_info(scheme: str, host: str, port: Optional[int]):
@@ -481,17 +500,9 @@ def test_parse_cluster_info(scheme: str, host: str, port: Optional[int]):
     if port is not None:
         address += f":{port}"
 
-    final_port = port if port is not None else DEFAULT_DASHBOARD_PORT
-    if scheme in {"http", "ray"}:
+    if scheme in {"http", "https"}:
         assert parse_cluster_info(address, False) == ClusterInfo(
-            address=f"http://{host}:{final_port}",
-            cookies=None,
-            metadata=None,
-            headers=None,
-        )
-    elif scheme == "https":
-        assert parse_cluster_info(address, False) == ClusterInfo(
-            address=f"https://{host}:{final_port}",
+            address=address,
             cookies=None,
             metadata=None,
             headers=None,
@@ -528,6 +539,33 @@ for i in range(100):
                 i += 1
 
         wait_for_condition(_check_job_succeeded, client=client, job_id=job_id)
+
+
+def _hook(env):
+    with open(env["env_vars"]["TEMPPATH"], "w+") as f:
+        f.write(env["env_vars"]["TOKEN"])
+    return env
+
+
+def test_jobs_env_hook(job_sdk_client: JobSubmissionClient):
+    client = job_sdk_client
+
+    _, path = tempfile.mkstemp()
+    runtime_env = {"env_vars": {"TEMPPATH": path, "TOKEN": "Ray rocks!"}}
+    run_job_script = """
+import os
+import ray
+os.environ["RAY_RUNTIME_ENV_HOOK"] =\
+    "ray.dashboard.modules.job.tests.test_http_job_server._hook"
+ray.init(address="auto")
+"""
+    entrypoint = f"python -c '{run_job_script}'"
+    job_id = client.submit_job(entrypoint=entrypoint, runtime_env=runtime_env)
+
+    wait_for_condition(_check_job_succeeded, client=client, job_id=job_id)
+
+    with open(path) as f:
+        assert f.read().strip() == "Ray rocks!"
 
 
 if __name__ == "__main__":

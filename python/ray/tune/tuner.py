@@ -2,17 +2,22 @@ from typing import Any, Callable, Dict, Optional, Type, Union
 
 import ray
 
-from ray.ml.config import RunConfig
-from ray.ml.trainer import Trainer
+from ray.air.config import RunConfig
+from ray.train.trainer import BaseTrainer
 from ray.tune import TuneError
 from ray.tune.result_grid import ResultGrid
 from ray.tune.trainable import Trainable
 from ray.tune.impl.tuner_internal import TunerInternal
 from ray.tune.tune_config import TuneConfig
 from ray.util import PublicAPI
-from ray.util.client.common import ClientActorHandle
 from ray.util.ml_utils.node import force_on_current_node
 
+ClientActorHandle = Any
+
+try:
+    from ray.util.client.common import ClientActorHandle
+except Exception:
+    pass
 
 # The magic key that is used when instantiating Tuner during resume.
 _TUNER_INTERNAL = "_tuner_internal"
@@ -30,23 +35,47 @@ class Tuner:
         tune_config: Tuning algorithm specific configs.
             Refer to ray.tune.tune_config.TuneConfig for more info.
         run_config: Runtime configuration that is specific to individual trials.
-            Refer to ray.ml.config.RunConfig for more info.
+            If passed, this will overwrite the run config passed to the Trainer,
+            if applicable. Refer to ray.air.config.RunConfig for more info.
 
     Usage pattern:
+
     .. code-block:: python
 
-        # TODO(xwjiang): Make this runnable. Add imports.
+        from sklearn.datasets import load_breast_cancer
+
+        from ray import tune
+        from ray.data import from_pandas
+        from ray.air.config import RunConfig
+        from ray.train.xgboost import XGBoostTrainer
+        from ray.tune.tuner import Tuner
+
+        def get_dataset():
+            data_raw = load_breast_cancer(as_frame=True)
+            dataset_df = data_raw["data"]
+            dataset_df["target"] = data_raw["target"]
+            dataset = from_pandas(dataset_df)
+            return dataset
+
+        trainer = XGBoostTrainer(
+            label_column="target",
+            params={},
+            datasets={"train": get_dataset()},
+        )
 
         param_space = {
             "scaling_config": {
-                "num_actors": tune.grid_search([2, 4]),
-                "cpus_per_actor": 2,
-                "gpus_per_actor": 0,
+                "num_workers": tune.grid_search([2, 4]),
+                "resources_per_worker": {
+                    "CPU": tune.grid_search([1, 2]),
+                },
             },
-            "preprocessor": tune.grid_search([prep_v1, prep_v2]),
-            "datasets": {
-                "train_dataset": tune.grid_search([ds1, ds2]),
-            },
+            # You can even grid search various datasets in Tune.
+            # "datasets": {
+            #     "train": tune.grid_search(
+            #         [ds1, ds2]
+            #     ),
+            # },
             "params": {
                 "objective": "binary:logistic",
                 "tree_method": "approx",
@@ -57,10 +86,11 @@ class Tuner:
             },
         }
         tuner = Tuner(trainable=trainer, param_space=param_space,
-            run_config(name="my_tune_run"))
+            run_config=RunConfig(name="my_tune_run"))
         analysis = tuner.fit()
 
     To retry a failed tune run, you can then do
+
     .. code-block:: python
 
         tuner = Tuner.restore(experiment_checkpoint_dir)
@@ -81,14 +111,17 @@ class Tuner:
                 str,
                 Callable,
                 Type[Trainable],
-                Type[Trainer],
-                Trainer,
+                BaseTrainer,
             ]
         ] = None,
         param_space: Optional[Dict[str, Any]] = None,
         tune_config: Optional[TuneConfig] = None,
         run_config: Optional[RunConfig] = None,
         # This is internal only arg.
+        # Only for dogfooding purposes. We can slowly promote these args
+        # to RunConfig or TuneConfig as needed.
+        # TODO(xwjiang): Remove this later.
+        _tuner_kwargs: Optional[Dict] = None,
         _tuner_internal: Optional[TunerInternal] = None,
     ):
         """Configure and construct a tune run."""
@@ -126,12 +159,12 @@ class Tuner:
         #  when a Tuner is restored and fit again?
         if not ray.util.client.ray.is_connected():
             tuner_internal = TunerInternal(restore_path=path)
-            return Tuner(tuner_internal=tuner_internal)
+            return Tuner(_tuner_internal=tuner_internal)
         else:
             tuner_internal = force_on_current_node(
                 ray.remote(num_cpus=0)(TunerInternal)
             ).remote(restore_path=path)
-            return Tuner(tuner_internal=tuner_internal)
+            return Tuner(_tuner_internal=tuner_internal)
 
     def fit(self) -> ResultGrid:
         """Executes hyperparameter tuning job as configured and returns result.
@@ -146,15 +179,11 @@ class Tuner:
         In such cases, there will be instruction like the following printed out
         at the end of console output to inform users on how to resume.
 
-        Please use tuner = Tuner.restore("/Users/xwjiang/ray_results/tuner_resume")
+        Please use tuner = Tuner.restore("~/ray_results/tuner_resume")
         to resume.
 
-        Exception that happens in non-essential integration blocks like during invoking
-        callbacks will not crash the whole run.
-
         Raises:
-            TuneError: If errors occur executing the experiment that originate from
-                Tune.
+            RayTaskError when the exception happens in trainable else TuneError.
         """
 
         if not self._is_ray_client:
@@ -162,19 +191,19 @@ class Tuner:
                 return self._local_tuner.fit()
             except Exception as e:
                 raise TuneError(
-                    f"Tune run failed."
+                    f"Tune run failed. "
                     f'Please use tuner = Tuner.restore("'
-                    f'{self._local_tuner.experiment_checkpoint_dir}") to resume.'
+                    f'{self._local_tuner.get_experiment_checkpoint_dir()}") to resume.'
                 ) from e
         else:
             experiment_checkpoint_dir = ray.get(
-                self._remote_tuner.experiment_checkpoint_dir.remote()
+                self._remote_tuner.get_experiment_checkpoint_dir.remote()
             )
             try:
                 return ray.get(self._remote_tuner.fit.remote())
             except Exception as e:
                 raise TuneError(
-                    f"Tune run failed."
+                    f"Tune run failed. "
                     f'Please use tuner = Tuner.restore("'
                     f'{experiment_checkpoint_dir}") to resume.'
                 ) from e

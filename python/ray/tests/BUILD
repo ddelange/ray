@@ -31,6 +31,11 @@ py_test_module_list(
     "test_advanced_2.py",
     "test_advanced_3.py",
     "test_advanced_4.py",
+    "test_advanced_5.py",
+    "test_advanced_6.py",
+    "test_advanced_7.py",
+    "test_advanced_8.py",
+    "test_advanced_9.py",
     "test_array.py",
     "test_autoscaling_policy.py",
     "test_basic.py",
@@ -39,6 +44,7 @@ py_test_module_list(
     "test_basic_5.py",
     "test_cancel.py",
     "test_gcs_fault_tolerance.py",
+    "test_generators.py",
     "test_metrics_agent.py",
     "test_component_failures_2.py",
     "test_component_failures_3.py",
@@ -54,7 +60,7 @@ py_test_module_list(
     "test_healthcheck.py",
     "test_kill_raylet_signal_log.py",
     "test_memstat.py",
-    "test_mldataset.py",
+    "test_protobuf_compatibility.py"
   ],
   size = "medium",
   extra_srcs = SRCS,
@@ -65,6 +71,7 @@ py_test_module_list(
 py_test_module_list(
   files = [
     "test_client.py",
+    "test_client_reconnect.py",
   ],
   size = "large",
   extra_srcs = SRCS,
@@ -82,7 +89,6 @@ py_test_module_list(
     "test_client_references.py",
     "test_client_warnings.py",
     "test_client_library_integration.py",
-    "test_client_reconnect.py",
   ],
   size = "medium",
   extra_srcs = SRCS,
@@ -99,7 +105,6 @@ py_test_module_list(
     "test_metrics.py",
     "test_multi_node.py",
     "test_multi_node_2.py",
-    "test_multi_node_3.py",
     "test_multinode_failures.py",
     "test_multinode_failures_2.py",
     "test_multiprocessing.py",
@@ -119,21 +124,21 @@ py_test_module_list(
     "test_runtime_env_fork_process.py",
     "test_serialization.py",
     "test_shuffle.py",
+    "test_state_api.py",
+    "test_state_api_log.py",
+    "test_state_api_summary.py",
     "test_stress.py",
+    "test_storage.py",
     "test_stress_sharded.py",
     "test_tempfile.py",
     "test_tensorflow.py",
-    "test_threaded_actor.py",
     "test_tls_auth.py",
     "test_ray_debugger.py",
     "test_worker_capping.py",
-    "test_object_spilling_2.py",
-    "test_object_spilling_3.py",
     "test_object_manager.py",
     "test_multi_tenancy.py",
     "test_namespace.py",
     "test_scheduling.py",
-    "test_scheduling_2.py",
     "test_traceback.py",
   ],
   size = "medium",
@@ -169,12 +174,25 @@ py_test_module_list(
     "test_environ.py",
     "test_raylet_output.py",
     "test_scheduling_performance.py",
+    "test_get_or_create_actor.py",
+    "test_gcs_utils.py",
   ],
   size = "small",
   extra_srcs = SRCS,
   tags = ["exclusive", "small_size_python_tests", "team:core"],
   deps = ["//:ray_lib"],
 )
+
+py_test_module_list(
+  files = [
+    "test_gcs_ha_e2e.py",
+  ],
+  size = "small",
+  extra_srcs = SRCS,
+  tags = ["exclusive", "ray_ha", "team:core"],
+  deps = ["//:ray_lib"],
+)
+
 
 py_test_module_list(
   files = [
@@ -214,11 +232,15 @@ py_test_module_list(
     "test_cli.py",
     "test_failure.py",
     "test_actor_advanced.py",
+    "test_threaded_actor.py",
     "test_stress_failure.py",
     "test_reconstruction.py",
+    "test_reconstruction_2.py",
+    "test_failure_2.py",
     "test_failure_3.py",
     "test_chaos.py",
     "test_reference_counting_2.py",
+    "test_exit_observability.py",
   ],
   size = "large",
   extra_srcs = SRCS,
@@ -230,11 +252,16 @@ py_test_module_list(
   files = [
     "test_basic_3.py",
     "test_output.py",
-    "test_failure_2.py",
+    "test_out_of_disk_space.py",
     "test_failure_4.py",
     "test_object_spilling.py",
+    "test_object_spilling_no_asan.py",
+    "test_object_spilling_2.py",
+    "test_object_spilling_3.py",
     "test_plasma_unlimited.py",
     "test_placement_group_mini_integration.py",
+    "test_scheduling_2.py",
+    "test_multi_node_3.py",
   ],
   size = "large",
   extra_srcs = SRCS,
@@ -245,6 +272,7 @@ py_test_module_list(
 py_test_module_list(
   files = [
     "test_runtime_env.py",
+    "test_runtime_env_2.py",
     "test_runtime_env_working_dir.py",
     "test_runtime_env_working_dir_2.py",
     "test_runtime_env_working_dir_3.py",
@@ -357,6 +385,14 @@ py_test(
     deps = ["//:ray_lib"],
 )
 
+py_test(
+    name = "kuberay/test_autoscaling_e2e",
+    size = "medium",
+    srcs = SRCS + ["kuberay/test_autoscaling_e2e.py"],
+    tags = ["exclusive", "kuberay_operator", "team:serverless"],
+    deps = ["//:ray_lib"],
+)
+
 # TODO(ekl) we can't currently support tagging these as flaky since there's
 # no way to filter by both flaky and client mode tests in bazel.
 py_test_module_list(
@@ -403,7 +439,7 @@ py_test_module_list(
     "test_scheduling_2.py",
     "test_array.py"
   ],
-  size = "medium",
+  size = "large",
   extra_srcs = SRCS,
   name_suffix = "_debug_mode",
   tags = ["exclusive", "debug_tests", "team:core"],

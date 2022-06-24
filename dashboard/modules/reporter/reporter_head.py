@@ -1,24 +1,25 @@
 import json
 import logging
-import yaml
 import os
+
 import aiohttp.web
+import yaml
 
 import ray
-import ray.dashboard.utils as dashboard_utils
-import ray.dashboard.optional_utils as dashboard_optional_utils
-import ray.experimental.internal_kv as internal_kv
 import ray._private.services
 import ray._private.utils
-from ray.ray_constants import (
-    DEBUG_AUTOSCALING_STATUS,
-    DEBUG_AUTOSCALING_STATUS_LEGACY,
-    DEBUG_AUTOSCALING_ERROR,
-)
-from ray.core.generated import reporter_pb2
-from ray.core.generated import reporter_pb2_grpc
+import ray.dashboard.optional_utils as dashboard_optional_utils
+import ray.dashboard.utils as dashboard_utils
+import ray.experimental.internal_kv as internal_kv
 from ray._private.gcs_pubsub import GcsAioResourceUsageSubscriber
 from ray._private.metrics_agent import PrometheusServiceDiscoveryWriter
+from ray._private.ray_constants import (
+    DEBUG_AUTOSCALING_ERROR,
+    DEBUG_AUTOSCALING_STATUS,
+    DEBUG_AUTOSCALING_STATUS_LEGACY,
+    GLOBAL_GRPC_OPTIONS,
+)
+from ray.core.generated import reporter_pb2, reporter_pb2_grpc
 from ray.dashboard.datacenter import DataSource
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ class ReportHead(dashboard_utils.DashboardHeadModule):
         if change.new:
             node_id, ports = change.new
             ip = DataSource.node_id_to_ip[node_id]
-            options = (("grpc.enable_http_proxy", 0),)
+            options = GLOBAL_GRPC_OPTIONS
             channel = ray._private.utils.init_grpc_channel(
                 f"{ip}:{ports[1]}", options=options, asynchronous=True
             )
@@ -118,8 +119,8 @@ class ReportHead(dashboard_utils.DashboardHeadModule):
         """Returns status information about the cluster.
 
         Currently contains two fields:
-            autoscaling_status (str): a status message from the autoscaler.
-            autoscaling_error (str): an error message from the autoscaler if
+            autoscaling_status (str)-- a status message from the autoscaler.
+            autoscaling_error (str)-- an error message from the autoscaler if
                 anything has gone wrong during autoscaling.
 
         These fields are both read from the GCS, it's expected that the
